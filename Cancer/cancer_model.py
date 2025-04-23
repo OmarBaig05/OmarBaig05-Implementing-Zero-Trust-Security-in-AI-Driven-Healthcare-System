@@ -1,10 +1,48 @@
 import pandas as pd
 import numpy as np
 import joblib
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import List
 import uvicorn
+import hashlib
+import logging
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+import os
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+import dotenv
+import os
+
+# Load environment variables from .env file
+dotenv.load_dotenv()
+MODEL_HASH = os.getenv("SHA_HASH")
+if MODEL_HASH is None:
+    raise ValueError("SHA_HASH environment variable not set.")
+
+# Load model with integrity check
+model_path = './Cancer/cancer_pred.pkl'
+
+# Initialize FastAPI app
+app = FastAPI(title="Secure Breast Cancer Prediction API")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Define feature columns
 feature_columns = [
@@ -17,7 +55,7 @@ feature_columns = [
     'concavity_worst', 'concave points_worst', 'symmetry_worst', 'fractal_dimension_worst'
 ]
 
-# Define feature ranges with 2% margin
+# Feature ranges with 2% margin
 feature_ranges = {
     'radius_mean': (6.84138, 28.6722),
     'texture_mean': (9.5158, 40.0656),
@@ -51,8 +89,8 @@ feature_ranges = {
     'fractal_dimension_worst': (0.0539392, 0.21165)
 }
 
-# FastAPI app
-app = FastAPI(title="Breast Cancer Prediction API")
+# Expected feature statistics (mean and std) for z-score validation
+feature_stats = {f: {'mean': (r[0] + r[1]) / 2, 'std': (r[1] - r[0]) / 6} for f, r in feature_ranges.items()}
 
 # Pydantic model for single prediction
 class CancerData(BaseModel):
@@ -91,49 +129,86 @@ class CancerData(BaseModel):
 class CancerDataBatch(BaseModel):
     data: List[CancerData]
 
-# Load model
-try:
-    model = joblib.load('cancer_pred.pkl')
-except FileNotFoundError:
+def verify_model_integrity(model_path: str) -> bool:
+    try:
+        with open(model_path, 'rb') as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()
+        return file_hash == MODEL_HASH
+    except Exception as e:
+        logger.error(f"Model integrity check failed: {str(e)}")
+        return False
+
+
+if not os.path.exists(model_path):
+    logger.error("Model file not found")
     raise Exception("Model file not found. Ensure 'cancer_pred.pkl' exists.")
+if not verify_model_integrity(model_path):
+    logger.error("Model integrity verification failed")
+    raise Exception("Model integrity check failed. Possible tampering detected.")
+try:
+    model = joblib.load(model_path)
+except Exception as e:
+    logger.error(f"Failed to load model: {str(e)}")
+    raise Exception(f"Failed to load model: {str(e)}")
+
+
+# Adversarial input detection
+def detect_adversarial_input(input_data: pd.DataFrame) -> bool:
+    # Z-score check
+    for col in input_data.columns:
+        z_scores = np.abs((input_data[col] - feature_stats[col]['mean']) / feature_stats[col]['std'])
+        if (z_scores > 3).any():
+            logger.warning(f"High z-score detected in {col}")
+            return True
+    return False
 
 @app.post("/predict")
-async def predict(data: CancerData):
+@limiter.limit("5/minute")
+async def predict(data: CancerData, request: Request):
     try:
         # Convert input to DataFrame
         input_data = pd.DataFrame([data.dict(by_alias=True)], columns=feature_columns)
         
+        # Check for adversarial input
+        if detect_adversarial_input(input_data):
+            logger.warning(f"Adversarial input detected from {request.client.host}")
+            raise HTTPException(status_code=400, detail="Suspicious input detected")
+        
         # Predict
         prediction = model.predict(input_data)[0]
-        # Map string prediction to integer
         prediction_int = 1 if prediction == 'M' else 0 if prediction == 'B' else int(prediction)
         
-        return {
-            "prediction": prediction_int
-        }
+        logger.info(f"Prediction made for client {request.client.host}: {prediction_int}")
+        return {"prediction": prediction_int}
     except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/predict_batch")
-async def predict_batch(batch: CancerDataBatch):
+@limiter.limit("3/minute")
+async def predict_batch(batch: CancerDataBatch, request: Request):
     try:
         # Convert input to DataFrame
         input_data = pd.DataFrame([item.dict(by_alias=True) for item in batch.data], columns=feature_columns)
         
+        # Check for adversarial input
+        if detect_adversarial_input(input_data):
+            logger.warning(f"Adversarial input detected from {request.client.host}")
+            raise HTTPException(status_code=400, detail="Suspicious input detected")
+        
         # Predict
         predictions = model.predict(input_data)
-        # Map string predictions to integers
         predictions_int = [1 if p == 'M' else 0 if p == 'B' else int(p) for p in predictions]
         
-        return {
-            "predictions": predictions_int
-        }
+        logger.info(f"Batch prediction made for client {request.client.host}: {len(predictions_int)} predictions")
+        return {"predictions": predictions_int}
     except Exception as e:
+        logger.error(f"Batch prediction error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/")
 async def root():
-    return {"message": "Breast Cancer Prediction API"}
+    return {"message": "Secure Breast Cancer Prediction API"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
@@ -246,4 +321,24 @@ if __name__ == "__main__":
 #       "fractal_dimension_worst": 0.1402
 #     }
 #   ]
+# }
+
+
+
+# for wrong values outpu will be like, they are referenced from feature_ranges: 
+# {
+#     "detail": [
+#         {
+#             "type": "less_than_equal",
+#             "loc": [
+#                 "body",
+#                 "fractal_dimension_worst"
+#             ],
+#             "msg": "Input should be less than or equal to 0.21165",
+#             "input": 0.21166,
+#             "ctx": {
+#                 "le": 0.21165
+#             }
+#         }
+#     ]
 # }
