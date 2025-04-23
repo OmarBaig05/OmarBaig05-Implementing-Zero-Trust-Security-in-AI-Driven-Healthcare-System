@@ -1,31 +1,29 @@
 import pandas as pd
 import numpy as np
 import joblib
+import hashlib
+import logging
+import os
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import List
 import uvicorn
-import hashlib
-import logging
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-import os
+import dotenv
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-import dotenv
-import os
 
 # Load environment variables from .env file
+dotenv.load_dotenv()
 dotenv.load_dotenv()
 MODEL_HASH = os.getenv("SHA_HASH")
 if MODEL_HASH is None:
     raise ValueError("SHA_HASH environment variable not set.")
-
-# Load model with integrity check
-model_path = './Cancer/cancer_pred.pkl'
 
 # Initialize FastAPI app
 app = FastAPI(title="Secure Breast Cancer Prediction API")
@@ -129,6 +127,9 @@ class CancerData(BaseModel):
 class CancerDataBatch(BaseModel):
     data: List[CancerData]
 
+# Load model with integrity check
+model_path = './Cancer/cancer_pred.pkl'
+
 def verify_model_integrity(model_path: str) -> bool:
     try:
         with open(model_path, 'rb') as f:
@@ -137,7 +138,6 @@ def verify_model_integrity(model_path: str) -> bool:
     except Exception as e:
         logger.error(f"Model integrity check failed: {str(e)}")
         return False
-
 
 if not os.path.exists(model_path):
     logger.error("Model file not found")
@@ -151,10 +151,8 @@ except Exception as e:
     logger.error(f"Failed to load model: {str(e)}")
     raise Exception(f"Failed to load model: {str(e)}")
 
-
 # Adversarial input detection
 def detect_adversarial_input(input_data: pd.DataFrame) -> bool:
-    # Z-score check
     for col in input_data.columns:
         z_scores = np.abs((input_data[col] - feature_stats[col]['mean']) / feature_stats[col]['std'])
         if (z_scores > 3).any():
@@ -176,10 +174,14 @@ async def predict(data: CancerData, request: Request):
         
         # Predict
         prediction = model.predict(input_data)[0]
+        probability = model.predict_proba(input_data)[0].tolist()
         prediction_int = 1 if prediction == 'M' else 0 if prediction == 'B' else int(prediction)
         
         logger.info(f"Prediction made for client {request.client.host}: {prediction_int}")
-        return {"prediction": prediction_int}
+        return {
+            "prediction": prediction_int,
+            "probability": probability
+        }
     except Exception as e:
         logger.error(f"Prediction error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -198,10 +200,14 @@ async def predict_batch(batch: CancerDataBatch, request: Request):
         
         # Predict
         predictions = model.predict(input_data)
+        probabilities = model.predict_proba(input_data).tolist()
         predictions_int = [1 if p == 'M' else 0 if p == 'B' else int(p) for p in predictions]
         
         logger.info(f"Batch prediction made for client {request.client.host}: {len(predictions_int)} predictions")
-        return {"predictions": predictions_int}
+        return {
+            "predictions": predictions_int,
+            "probabilities": probabilities
+        }
     except Exception as e:
         logger.error(f"Batch prediction error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -340,5 +346,32 @@ if __name__ == "__main__":
 #                 "le": 0.21165
 #             }
 #         }
+#     ]
+# }
+# {
+#     "detail": [
+#         {
+#             "type": "less_than_equal",
+#             "loc": [
+#                 "body",
+#                 "fractal_dimension_worst"
+#             ],
+#             "msg": "Input should be less than or equal to 0.21165",
+#             "input": 2,
+#             "ctx": {
+#                 "le": 0.21165
+#             }
+#         }
+#     ]
+# }
+
+
+
+# For Correct predictions, output will be like:
+# {
+#     "prediction": 1,
+#     "probability": [
+#         3.3306690738754696e-15,
+#         0.9999999999999967
 #     ]
 # }
