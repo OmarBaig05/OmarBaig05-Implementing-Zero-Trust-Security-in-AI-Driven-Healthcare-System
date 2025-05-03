@@ -13,6 +13,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import dotenv
+from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,14 +32,31 @@ if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is
 # Initialize FastAPI app
 app = FastAPI(title="Secure Medical Prediction API")
 
+allowed_origin = "http://localhost:3000"
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=[allowed_origin],  # Only allow localhost:3000
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Middleware to log unauthorized origins
+class LogUnauthorizedOriginsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        origin = request.headers.get("origin")
+        print(origin)
+        if origin and origin != allowed_origin:
+            logger.warning(f"Unauthorized request from origin: {origin}")
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Requests from this origin are not allowed."},
+            )
+        return await call_next(request)
+
+# Add the custom middleware
+app.add_middleware(LogUnauthorizedOriginsMiddleware)
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
