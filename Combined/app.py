@@ -25,8 +25,11 @@ dotenv.load_dotenv()
 MODEL_HASH_CANCER = os.getenv("SHA_HASH")
 MODEL_HASH_HEART = os.getenv("SHA_HASH_256_HEART_FAILURE_MODEL")
 SCALER_HASH_HEART = os.getenv("SHA_HASH_256_SCALER")
-allowed_origin = os.getenv("ALLOWED_ORIGIN", "").strip()
+allowed_origin = os.getenv("ALLOWED_ORIGIN")
 print(f"Allowed origin: {allowed_origin}")
+
+ALLOWED_IP = os.getenv("ALLOWED_IP")
+print(f"Allowed IP: {ALLOWED_IP}")
 
 if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is None:
     raise ValueError("Required environment variables not set.")
@@ -35,41 +38,41 @@ if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is
 app = FastAPI(title="Secure Medical Prediction API")
 
 # Add CORS middleware
-if allowed_origin == "*":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-else:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[allowed_origin],  # Only allow specified origin
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[allowed_origin],  # Only allow localhost:3000
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Middleware to log unauthorized origins
 class LogUnauthorizedOriginsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         origin = request.headers.get("origin")
-        logger.info(f"Request origin: {origin}")
-        
-        # Block requests without an origin header or from unauthorized origins
-        if allowed_origin != "*" and (not origin or origin != allowed_origin):
+        print(origin)
+        if origin and origin != allowed_origin:
             logger.warning(f"Unauthorized request from origin: {origin}")
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Requests from this origin are not allowed."},
             )
-        
         return await call_next(request)
 
 # Add the custom middleware
 app.add_middleware(LogUnauthorizedOriginsMiddleware)
+
+
+#  only allow specific ip
+class RestrictByIPMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        client_host = request.client.host
+        if ALLOWED_IP != '*' and client_host != ALLOWED_IP:
+            logger.warning(f"Unauthorized IP: {client_host}")
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+        return await call_next(request)
+
+app.add_middleware(RestrictByIPMiddleware)
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
