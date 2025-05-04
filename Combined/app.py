@@ -25,6 +25,8 @@ dotenv.load_dotenv()
 MODEL_HASH_CANCER = os.getenv("SHA_HASH")
 MODEL_HASH_HEART = os.getenv("SHA_HASH_256_HEART_FAILURE_MODEL")
 SCALER_HASH_HEART = os.getenv("SHA_HASH_256_SCALER")
+allowed_origin = os.getenv("ALLOWED_ORIGIN")
+print(f"Allowed origin: {allowed_origin}")
 
 if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is None:
     raise ValueError("Required environment variables not set.")
@@ -32,7 +34,6 @@ if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is
 # Initialize FastAPI app
 app = FastAPI(title="Secure Medical Prediction API")
 
-allowed_origin = "http://localhost:3000"
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
