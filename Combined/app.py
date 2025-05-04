@@ -35,13 +35,22 @@ if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is
 app = FastAPI(title="Secure Medical Prediction API")
 
 # Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[allowed_origin],  # Only allow localhost:3000
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if allowed_origin == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[allowed_origin],  # Only allow specified origin
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Middleware to log unauthorized origins
 class LogUnauthorizedOriginsMiddleware(BaseHTTPMiddleware):
@@ -50,7 +59,7 @@ class LogUnauthorizedOriginsMiddleware(BaseHTTPMiddleware):
         logger.info(f"Request origin: {origin}")
         
         # Block requests without an origin header or from unauthorized origins
-        if not origin or origin != allowed_origin:
+        if allowed_origin != "*" and (not origin or origin != allowed_origin):
             logger.warning(f"Unauthorized request from origin: {origin}")
             return JSONResponse(
                 status_code=403,
