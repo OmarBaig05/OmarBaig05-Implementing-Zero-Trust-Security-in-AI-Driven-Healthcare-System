@@ -25,7 +25,7 @@ dotenv.load_dotenv()
 MODEL_HASH_CANCER = os.getenv("SHA_HASH")
 MODEL_HASH_HEART = os.getenv("SHA_HASH_256_HEART_FAILURE_MODEL")
 SCALER_HASH_HEART = os.getenv("SHA_HASH_256_SCALER")
-allowed_origin = os.getenv("ALLOWED_ORIGIN")
+allowed_origin = os.getenv("ALLOWED_ORIGIN", "").strip()
 print(f"Allowed origin: {allowed_origin}")
 
 if MODEL_HASH_CANCER is None or MODEL_HASH_HEART is None or SCALER_HASH_HEART is None:
@@ -47,13 +47,16 @@ app.add_middleware(
 class LogUnauthorizedOriginsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         origin = request.headers.get("origin")
-        print(origin)
-        if origin and origin != allowed_origin:
+        logger.info(f"Request origin: {origin}")
+        
+        # Block requests without an origin header or from unauthorized origins
+        if not origin or origin != allowed_origin:
             logger.warning(f"Unauthorized request from origin: {origin}")
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Requests from this origin are not allowed."},
             )
+        
         return await call_next(request)
 
 # Add the custom middleware
